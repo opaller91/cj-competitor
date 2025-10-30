@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "list": [
+    {
+      "id": "1101",
+      "name": "ลาดพร้าว 64",
+      "province": "กรุงเทพฯ",
+      "district": "วังทองหลาง",
+      "competitor": "CJ ลาดพร้าว 62",
+      "competitorId": "C1101",
+      "staff": "มีนา"
+    },
+    {
+      "id": "1102",
+      "name": "รัชดา 15",
+      "province": "กรุงเทพฯ",
+      "district": "ดินแดง",
+      "competitor": "CJ ดินแดง 10",
+      "competitorId": "C1102",
+      "staff": "รัตนา"
+    }
+  ]
+}

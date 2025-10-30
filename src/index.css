@@ -1,0 +1,45 @@
+/* === Tailwind Base === */
+@import "tailwindcss";
+
+
+/* === Global Styles === */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* พื้นหลังเทาอ่อน + ฟอนต์ไทยอ่านง่าย */
+body {
+  background-color: #f6f8f6;
+  font-family: 'Noto Sans Thai', 'Sarabun', system-ui, sans-serif;
+  color: #333;
+  line-height: 1.6;
+}
+
+/* ลิงก์ */
+a {
+  color: #00954C;
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* ปุ่มพื้นฐาน (ใช้ Tailwind class ใน component แทนดีกว่า) */
+.btn {
+  border-radius: 0.5rem;
+  background-color: #00954C;
+  color: white;
+  padding: 0.5rem 1rem;
+  font-weight: 500;
+  transition: background-color 0.2s ease;
+}
+.btn:hover {
+  background-color: #0d7d40;
+}
+
+/* ปรับ scroll bar ให้นุ่มนวล */
+html {
+  scroll-behavior: smooth;
+}

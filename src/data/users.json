@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "list": [
+    {
+      "username": "1001",
+      "password": "1001",
+      "name": "สมชาย",
+      "role": "Admin",
+      "branch": "Team Seal",
+      "isFirstLogin": true
+    },
+    {
+      "username": "2001",
+      "password": "abc123",
+      "name": "รัตนา",
+      "role": "Staff",
+      "branch": "รัชดา 15",
+      "isFirstLogin": false
+    }
+  ]
+}
