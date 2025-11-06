@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
+
 import {
   PieChart,
   Pie,
@@ -12,7 +14,9 @@ import {
   CartesianGrid,
   Legend,
 } from "recharts";
-import branchesData from "../data/branches.json";
+import { supabase } from "../lib/supabaseClient";
+import BranchMultiSelector from "../components/BranchMultiSelector";
+
 
 const STORAGE_TRACKER = "customerTrackerEvents_v2";
 const STORAGE_TC = "tcReportVersioned";
@@ -25,6 +29,8 @@ export default function BranchSummary() {
 
   const [branches, setBranches] = useState([]);
   const [branch, setBranch] = useState("");
+  const [selectedBranches, setSelectedBranches] = useState([]);
+
   const [trackerEvents, setTrackerEvents] = useState([]);
   const [tcRecords, setTcRecords] = useState([]);
 
@@ -32,21 +38,42 @@ export default function BranchSummary() {
   const [selectedPeriod, setSelectedPeriod] = useState("ทั้งหมด");
 
   useEffect(() => {
-    try {
-      const t = JSON.parse(localStorage.getItem(STORAGE_TRACKER) || "null");
-      const tc = JSON.parse(localStorage.getItem(STORAGE_TC) || "null");
-      setTrackerEvents(t?.events || []);
-      setTcRecords(tc?.data || []);
+    const fetchData = async () => {
+      try {
+        // ✅ โหลดข้อมูล Branch
+        const { data: branchData, error: branchErr } = await supabase
+          .from("branches")
+          .select("*")
+          .order("id");
+        if (branchErr) throw branchErr;
+        setBranches(branchData || []);
 
-      const b = JSON.parse(localStorage.getItem("branchesVersioned") || "null");
-      setBranches(b?.list || branchesData.list);
-      if (!canSelectBranch && currentUser?.branch) setBranch(currentUser.branch);
-    } catch (err) {
-      console.error("❌ โหลดข้อมูลล้มเหลว:", err);
-      setTrackerEvents([]);
-      setTcRecords([]);
-      setBranches(branchesData.list);
-    }
+        // ✅ โหลดข้อมูล Tracker (customer_tracker)
+        const { data: trackerData, error: trackerErr } = await supabase
+          .from("customer_tracker")
+          .select("*");
+        if (trackerErr) throw trackerErr;
+        setTrackerEvents(trackerData || []);
+
+        // ✅ โหลดข้อมูล TC (tc_report)
+        const { data: tcData, error: tcErr } = await supabase
+          .from("tc_report")
+          .select("*");
+        if (tcErr) throw tcErr;
+        setTcRecords(tcData || []);
+
+        // ✅ ตั้งค่าสาขาที่เห็นได้เฉพาะ Staff
+        if (!canSelectBranch && currentUser?.branch)
+          setSelectedBranches([currentUser.branch]);
+      } catch (err) {
+        console.error("❌ โหลดข้อมูลล้มเหลว:", err);
+        setTrackerEvents([]);
+        setTcRecords([]);
+        setBranches([]);
+      }
+    };
+
+    fetchData();
   }, [canSelectBranch, currentUser?.branch]);
 
   const branchOptions = useMemo(() => {
@@ -55,14 +82,16 @@ export default function BranchSummary() {
   }, [branches, canSelectBranch]);
 
   const filteredTracker = useMemo(() => {
-    if (branch === "เฉลี่ยทุกสาขา") return trackerEvents;
-    return trackerEvents.filter((e) => e.branch === branch);
-  }, [trackerEvents, branch]);
+    if (selectedBranches.includes("เฉลี่ยทุกสาขา")) return trackerEvents;
+    if (selectedBranches.length === 0) return [];
+    return trackerEvents.filter((e) => selectedBranches.includes(e.branch_id));
+  }, [trackerEvents, selectedBranches]);
 
   const filteredTC = useMemo(() => {
-    if (branch === "เฉลี่ยทุกสาขา") return tcRecords;
-    return tcRecords.filter((r) => r.branch === branch);
-  }, [tcRecords, branch]);
+    if (selectedBranches.includes("เฉลี่ยทุกสาขา")) return tcRecords;
+    if (selectedBranches.length === 0) return [];
+    return tcRecords.filter((r) => selectedBranches.includes(r.branch_id))
+  }, [tcRecords, selectedBranches]);
 
   const allDates = useMemo(() => {
     const unique = [
@@ -205,29 +234,62 @@ export default function BranchSummary() {
     },
   ];
 
+    // ✅ Export Excel
+  const exportToExcel = () => {
+    if (!groupedSummary.length) return alert("ไม่มีข้อมูลให้ดาวน์โหลด");
+
+    // กำหนดชื่อไฟล์ให้ระบุวันที่และสาขาที่เลือก
+    const branchLabel = selectedBranches.includes("เฉลี่ยทุกสาขา")
+      ? "AllBranches"
+      : selectedBranches.join("_") || "NoBranch";
+
+    const periodLabel = selectedPeriod === "ทั้งหมด" ? "AllPeriods" : selectedPeriod;
+    const dateLabel = selectedDate === "ทั้งหมด" ? "AllDates" : selectedDate;
+
+    // เตรียมข้อมูลในรูปแบบ export-friendly
+    const exportData = groupedSummary.map((r) => ({
+      วันที่: r.date,
+      รถยนต์: r.car,
+      มอไซค์: r.moto,
+      เดินเข้า: r.walk,
+      ชาย: r.male,
+      หญิง: r.female,
+      ของกิน: r.food,
+      ของใช้: r.nonfood,
+      "เครื่องดื่ม(คน)": r.drinkPerson,
+      "เครื่องดื่ม(แก้ว)": r.drinkCup,
+      "ยอดบิลรวม (TC)": r.totalTC,
+    }));
+
+    // สร้าง Sheet & Workbook
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Branch Summary");
+
+    // ดาวน์โหลดไฟล์
+    const filename = `BranchSummary_${branchLabel}_${dateLabel}_${periodLabel}.xlsx`;
+    XLSX.writeFile(wb, filename);
+  };
+
+
   return (
     <div className="min-h-screen bg-secondary p-4 md:p-6">
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-3">
         <h2 className="text-2xl font-bold text-gray-800">
-          {branch === "เฉลี่ยทุกสาขา"
+         {selectedBranches.includes("เฉลี่ยทุกสาขา")
             ? `สรุปเฉลี่ยทุกสาขา (${branches.length} สาขา)`
-            : `สรุปข้อมูลสาขา ${branch || "-"}`}
+            : selectedBranches.length > 1
+            ? `สรุปเฉลี่ย ${selectedBranches.length} สาขา`
+            : `สรุปข้อมูลสาขา ${selectedBranches[0] || "-"}`}
         </h2>
-        {canSelectBranch && (
-          <select
-            value={branch}
-            onChange={(e) => setBranch(e.target.value)}
-            className="border p-2 rounded-lg shadow bg-white"
-          >
-            <option value="">เลือกสาขา</option>
-            {branchOptions.map((b) => (
-              <option key={b} value={b}>
-                {b}
-              </option>
-            ))}
-          </select>
-        )}
+        
+          <BranchMultiSelector
+            selectedBranches={selectedBranches}
+            setSelectedBranches={setSelectedBranches}
+            canSelectBranch={canSelectBranch}
+          />
+        
       </div>
 
       {/* Filters */}
@@ -348,6 +410,16 @@ export default function BranchSummary() {
             </PieChart>
           </ResponsiveContainer>
         </SummaryCard>
+      </div>
+
+      {/* ปุ่มดาวน์โหลด */}
+      <div className="flex justify-end mb-4">
+        <button
+          onClick={exportToExcel}
+          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition"
+        >
+          📊 ดาวน์โหลด Excel
+        </button>
       </div>
 
       {/* ตารางรายวัน */}

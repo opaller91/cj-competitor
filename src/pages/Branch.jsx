@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import usersData from "../data/users.json";
-import branchesData from "../data/branches.json"; // mock ตั้งต้น
+import { supabase } from "../lib/supabaseClient";
 
 export default function Branch() {
   const [branches, setBranches] = useState([]);
@@ -18,26 +17,32 @@ export default function Branch() {
     staff: "",
   };
   const [form, setForm] = useState(emptyForm);
+  const [searchTerm, setSearchTerm] = useState("");
+
 
   // โหลดข้อมูลจาก localStorage (มี version)
   useEffect(() => {
-    const stored = JSON.parse(localStorage.getItem("branchesVersioned") || "null");
-    if (!stored || stored.version !== branchesData.version) {
-      localStorage.setItem("branchesVersioned", JSON.stringify(branchesData));
-      setBranches(branchesData.list);
-    } else {
-      setBranches(stored.list);
-    }
+    const fetchData = async () => {
+      // โหลดสาขาจากตาราง branches
+      const { data: branches, error: branchErr } = await supabase
+        .from("branches")
+        .select("*")
+        .order("id", { ascending: true });
+      if (branchErr) console.error(branchErr);
+      else setBranches(branches);
 
-    const storedUsers = JSON.parse(localStorage.getItem("usersVersioned") || "null");
-    setUsers(storedUsers?.list || usersData.list);
+      // โหลดรายชื่อผู้ใช้จากตาราง users
+      const { data: users, error: userErr } = await supabase
+        .from("users")
+        .select("*")
+        .order("id", { ascending: true });
+      if (userErr) console.error(userErr);
+      else setUsers(users);
+    };
+
+    fetchData();
   }, []);
 
-  const persist = (list) => {
-    const data = { version: branchesData.version, list };
-    localStorage.setItem("branchesVersioned", JSON.stringify(data));
-    setBranches(list);
-  };
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -57,42 +62,65 @@ export default function Branch() {
     setForm(emptyForm);
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     const { id, name } = form;
-
-    if (!id || !name) {
-      alert("กรุณากรอกรหัสร้านและชื่อสาขา");
-      return;
-    }
-
-    // กันรหัสร้านซ้ำ (ยกเว้นตัวที่กำลังแก้)
-    const isDuplicate = branches.some(
-      (b) => b.id === id && b.id !== editingId
-    );
-    if (isDuplicate) {
-      alert("มีรหัสร้านนี้อยู่แล้ว");
-      return;
-    }
+    if (!id || !name) return alert("กรุณากรอกรหัสร้านและชื่อสาขา");
 
     if (editingId) {
-      // บันทึกแก้ไข
-      const updated = branches.map((b) => (b.id === editingId ? form : b));
-      persist(updated);
-      cancelEdit();
+      // UPDATE
+      const { error } = await supabase
+        .from("branches")
+        .update({
+          name: form.name,
+          province: form.province,
+          district: form.district,
+          competitor: form.competitor,
+          competitor_id: form.competitorId,
+          staff: form.staff,
+        })
+        .eq("id", editingId);
+      if (error) alert("❌ แก้ไขไม่สำเร็จ");
+      else {
+        alert("✅ แก้ไขเรียบร้อย");
+        cancelEdit();
+      }
     } else {
-      // เพิ่มใหม่
-      persist([...branches, form]);
-      setForm(emptyForm);
+      // INSERT
+      const { error } = await supabase.from("branches").insert([
+        {
+          id: form.id,
+          name: form.name,
+          province: form.province,
+          district: form.district,
+          competitor: form.competitor,
+          competitor_id: form.competitorId,
+          staff: form.staff,
+        },
+      ]);
+      if (error) alert("❌ เพิ่มไม่สำเร็จ");
+      else {
+        alert("✅ เพิ่มเรียบร้อย");
+        setForm(emptyForm);
+      }
+    }
+
+    // รีโหลดข้อมูล
+    const { data } = await supabase.from("branches").select("*").order("id");
+    setBranches(data);
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm("ต้องการลบสาขานี้หรือไม่?")) return;
+    const { error } = await supabase.from("branches").delete().eq("id", id);
+    if (error) alert("❌ ลบไม่สำเร็จ");
+    else {
+      alert("✅ ลบเรียบร้อย");
+      const { data } = await supabase.from("branches").select("*").order("id");
+      setBranches(data);
     }
   };
 
-  const handleDelete = (id) => {
-    if (!confirm("ต้องการลบสาขานี้หรือไม่?")) return;
-    persist(branches.filter((b) => b.id !== id));
-    // ถ้ากำลังแก้อยู่แล้วลบสาขานั้น ให้ยกเลิกโหมดแก้
-    if (editingId === id) cancelEdit();
-  };
 
   return (
     <div className="p-4 md:p-6 bg-secondary min-h-screen">
@@ -168,8 +196,8 @@ export default function Branch() {
           >
             <option value="">พนักงานรับผิดชอบ</option>
             {users.map((u) => (
-              <option key={u.username} value={u.name}>
-                {u.name} ({u.branch})
+              <option key={u.id} value={u.username}>
+                {u.username} ({u.role})
               </option>
             ))}
           </select>
@@ -206,6 +234,17 @@ export default function Branch() {
           <span>ข้อมูลคู่แข่ง CJ</span>
         </div>
       </div>
+      
+      {/* ช่องค้นหา */}
+      <div className="flex justify-end mb-4">
+        <input
+          type="text"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          placeholder="🔍 ค้นหาโดยรหัสหรือชื่อ 7-Eleven / CJ"
+          className="w-full md:w-96 border p-2 rounded-lg shadow-sm focus:ring focus:ring-green-200"
+        />
+      </div>
 
       {/* ตารางสาขา */}
       <div className="overflow-x-auto">
@@ -224,7 +263,17 @@ export default function Branch() {
           </thead>
           <tbody>
             {branches.length ? (
-              branches.map((b) => (
+              branches
+                .filter((b) => {
+                  if (!searchTerm) return true;
+                  const term = searchTerm.toLowerCase();
+                  return (
+                    b.id.toLowerCase().includes(term) ||
+                    b.name.toLowerCase().includes(term) ||
+                    (b.competitorId || "").toLowerCase().includes(term) ||
+                    (b.competitor || "").toLowerCase().includes(term)
+                  );
+                }).map((b) => (
                 <tr key={b.id} className="border-t hover:bg-gray-50">
                   <td className="py-2 px-3 font-medium">{b.id}</td>
                   <td className="py-2 px-3">{b.name}</td>

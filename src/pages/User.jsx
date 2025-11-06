@@ -1,12 +1,14 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import usersData from "../data/users.json"; // 👉 ต้องมี structure: { version: x, list: [...] }
+import { supabase } from "../lib/supabaseClient";
+import bcrypt from "bcryptjs";
 
 export default function User() {
   const navigate = useNavigate();
   const currentUser = JSON.parse(localStorage.getItem("currentUser") || "null");
 
   const [users, setUsers] = useState([]);
+  const [branches, setBranches] = useState([]);
   const [newUser, setNewUser] = useState({
     username: "",
     name: "",
@@ -14,31 +16,32 @@ export default function User() {
     branch: "",
   });
 
-  // ✅ โหลด user จาก localStorage หรือ JSON (ตรวจ version)
+  // ✅ ตรวจ role ก่อนเข้า
   useEffect(() => {
     if (!currentUser || currentUser.role !== "Admin") {
       navigate("/home");
       return;
     }
-
-    const stored = JSON.parse(localStorage.getItem("usersVersioned") || "null");
-
-    // ถ้าไม่มี หรือเวอร์ชันไม่ตรง → โหลดจาก JSON ใหม่
-    if (!stored || stored.version !== usersData.version) {
-      localStorage.setItem("usersVersioned", JSON.stringify(usersData));
-      setUsers(usersData.list);
-    } else {
-      setUsers(stored.list);
-    }
+    fetchData();
   }, [navigate]);
 
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setNewUser({ ...newUser, [name]: value });
+  // ✅ โหลด users และ branches
+  const fetchData = async () => {
+    const { data: userData, error: userErr } = await supabase
+      .from("users")
+      .select("username, name, role, branch, is_first_login");
+    if (userErr) console.error("User fetch error:", userErr);
+    setUsers(userData || []);
+
+    const { data: branchData, error: branchErr } = await supabase
+      .from("branches")
+      .select("id, name");
+    if (branchErr) console.error("Branch fetch error:", branchErr);
+    setBranches(branchData || []);
   };
 
-  // ✅ เพิ่มผู้ใช้ใหม่ + เขียนกลับ localStorage พร้อม version
-  const handleSubmit = (e) => {
+  // ✅ เพิ่มผู้ใช้ใหม่
+  const handleSubmit = async (e) => {
     e.preventDefault();
     const { username, name, role, branch } = newUser;
 
@@ -47,44 +50,49 @@ export default function User() {
       return;
     }
 
-    if (users.some((u) => u.username === username)) {
+    // ตรวจซ้ำ
+    const exists = users.some((u) => u.username === username);
+    if (exists) {
       alert("มีรหัสพนักงานนี้อยู่แล้ว");
       return;
     }
 
-    const updatedList = [
-      ...users,
+    // เข้ารหัสรหัสผ่านเริ่มต้น
+    const hashed = await bcrypt.hash(username, 10);
+
+    const { error } = await supabase.from("users").insert([
       {
         username,
         name,
         role,
         branch,
-        password: username, // เริ่มต้นเป็นรหัสพนักงาน
-        isFirstLogin: role === "Admin" ? false : true, // Admin ไม่ต้องเปลี่ยน
+        password_hash: hashed,
+        is_first_login: role !== "Admin",
       },
-    ];
+    ]);
 
-    const newData = { version: usersData.version, list: updatedList };
-    setUsers(updatedList);
-    localStorage.setItem("usersVersioned", JSON.stringify(newData));
-    setNewUser({ username: "", name: "", role: "", branch: "" });
-    alert(`เพิ่มผู้ใช้งาน ${name} เรียบร้อย ✅`);
-  };
-
-  // ✅ ลบผู้ใช้ + อัปเดตกลับ localStorage
-  const handleDelete = (username) => {
-    if (confirm("ต้องการลบผู้ใช้งานนี้หรือไม่?")) {
-      const updatedList = users.filter((u) => u.username !== username);
-      const newData = { version: usersData.version, list: updatedList };
-      setUsers(updatedList);
-      localStorage.setItem("usersVersioned", JSON.stringify(newData));
+    if (error) {
+      console.error("Add user error:", error);
+      alert("❌ เพิ่มผู้ใช้งานไม่สำเร็จ");
+    } else {
+      alert(`✅ เพิ่มผู้ใช้งาน ${name} เรียบร้อย`);
+      setNewUser({ username: "", name: "", role: "", branch: "" });
+      fetchData();
     }
   };
 
-  // ✅ กรองไม่ให้โชว์บัญชีตัวเอง
-  const displayUsers = users.filter(
-    (u) => u.username !== currentUser?.username
-  );
+  // ✅ ลบผู้ใช้
+  const handleDelete = async (username) => {
+    if (!confirm("ต้องการลบผู้ใช้งานนี้หรือไม่?")) return;
+    const { error } = await supabase.from("users").delete().eq("username", username);
+    if (error) {
+      console.error("Delete error:", error);
+    } else {
+      fetchData();
+    }
+  };
+
+  const displayUsers = users.filter((u) => u.username !== currentUser?.username);
 
   return (
     <div className="min-h-screen bg-secondary p-4 md:p-6">
@@ -100,7 +108,7 @@ export default function User() {
             type="text"
             name="username"
             value={newUser.username}
-            onChange={handleChange}
+            onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
             placeholder="รหัสพนักงาน"
             className="border p-2 rounded"
             required
@@ -109,7 +117,7 @@ export default function User() {
             type="text"
             name="name"
             value={newUser.name}
-            onChange={handleChange}
+            onChange={(e) => setNewUser({ ...newUser, name: e.target.value })}
             placeholder="ชื่อผู้ใช้งาน"
             className="border p-2 rounded"
             required
@@ -117,22 +125,28 @@ export default function User() {
           <select
             name="role"
             value={newUser.role}
-            onChange={handleChange}
+            onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
             className="border p-2 rounded"
             required
           >
             <option value="">สิทธิ์การใช้งาน</option>
             <option value="Admin">Admin</option>
             <option value="Staff">Staff</option>
+            <option value="Team Seal">Team Seal</option>
           </select>
-          <input
-            type="text"
+          <select
             name="branch"
             value={newUser.branch}
-            onChange={handleChange}
-            placeholder="สาขาที่รับผิดชอบ"
+            onChange={(e) => setNewUser({ ...newUser, branch: e.target.value })}
             className="border p-2 rounded"
-          />
+          >
+            <option value="">เลือกสาขา (ถ้ามี)</option>
+            {branches.map((b) => (
+              <option key={b.id} value={b.name}>
+                {b.name}
+              </option>
+            ))}
+          </select>
           <button
             type="submit"
             className="bg-primary text-white py-2 rounded hover:bg-green-700 transition"
@@ -149,7 +163,7 @@ export default function User() {
       {/* ตารางรายชื่อผู้ใช้งาน */}
       <div className="bg-white rounded-2xl shadow w-full max-w-5xl overflow-x-auto">
         <table className="min-w-full table-auto">
-          <thead className="bg-primary text-black">
+          <thead className="bg-green-700 text-white">
             <tr>
               <th className="py-3 px-4 text-left">รหัสพนักงาน</th>
               <th className="py-3 px-4 text-left">ชื่อ</th>
@@ -168,7 +182,7 @@ export default function User() {
                   <td className="py-3 px-4">{u.role}</td>
                   <td className="py-3 px-4">{u.branch || "-"}</td>
                   <td className="py-3 px-4">
-                    {u.isFirstLogin ? (
+                    {u.is_first_login ? (
                       <span className="text-amber-600 font-medium">
                         ยังไม่เปลี่ยนรหัส
                       </span>
@@ -190,10 +204,7 @@ export default function User() {
               ))
             ) : (
               <tr>
-                <td
-                  colSpan="6"
-                  className="text-center text-gray-500 py-4 italic"
-                >
+                <td colSpan="6" className="text-center text-gray-500 py-4 italic">
                   ยังไม่มีผู้ใช้งานในระบบ (ไม่รวมบัญชีของคุณ)
                 </td>
               </tr>

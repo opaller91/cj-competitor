@@ -1,3 +1,5 @@
+import { supabase } from "../lib/supabaseClient";
+import bcrypt from "bcryptjs";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -23,49 +25,54 @@ export default function ForceChangePassword() {
     }
 
     // ถ้าไม่ใช่ครั้งแรกแล้ว → กลับ Home
-    if (currentUser.isFirstLogin === false) {
+    if (currentUser.isFirstLogin === false || currentUser.is_first_login === false) {
       navigate("/home");
       return;
     }
   }, [currentUser, navigate]);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
 
-    // ตรวจความถูกต้องพื้นฐาน
-    if (!form.newPassword || !form.confirmPassword) {
+    if (!form.newPassword || !form.confirmPassword)
       return setError("กรุณากรอกข้อมูลให้ครบ");
-    }
-    if (form.newPassword !== form.confirmPassword) {
+    if (form.newPassword !== form.confirmPassword)
       return setError("รหัสผ่านไม่ตรงกัน");
-    }
-    if (form.newPassword.length < 6) {
+    if (form.newPassword.length < 6)
       return setError("รหัสผ่านควรมีอย่างน้อย 6 ตัวอักษร");
-    }
-    if (currentUser && form.newPassword === currentUser.username) {
+    if (currentUser && form.newPassword === currentUser.username)
       return setError("รหัสผ่านใหม่ต้องแตกต่างจากรหัสพนักงาน");
+
+    try {
+      // ✅ เข้ารหัสรหัสผ่านใหม่
+      const hashedPassword = await bcrypt.hash(form.newPassword, 10);
+
+      // ✅ อัปเดตใน Supabase
+      const { error: updateErr } = await supabase
+        .from("users")
+        .update({
+          password_hash: hashedPassword,
+          is_first_login: false,
+        })
+        .eq("username", currentUser.username);
+
+      if (updateErr) throw updateErr;
+
+      // ✅ อัปเดต currentUser ใน localStorage
+      const updatedCurrent = {
+        ...currentUser,
+        password_hash: hashedPassword,
+        isFirstLogin: false,
+      };
+      localStorage.setItem("currentUser", JSON.stringify(updatedCurrent));
+
+      alert("เปลี่ยนรหัสผ่านเรียบร้อยแล้ว ✅");
+      navigate("/home");
+    } catch (err) {
+      console.error("❌ เปลี่ยนรหัสผ่านล้มเหลว:", err);
+      setError("เกิดข้อผิดพลาดในการบันทึก");
     }
-
-    // อัปเดต users ใน localStorage
-    const users = JSON.parse(localStorage.getItem("users") || "[]");
-    const updatedUsers = users.map((u) =>
-      u.username === currentUser.username
-        ? { ...u, password: form.newPassword, isFirstLogin: false }
-        : u
-    );
-    localStorage.setItem("users", JSON.stringify(updatedUsers));
-
-    // อัปเดต currentUser ด้วย
-    const updatedCurrent = {
-      ...currentUser,
-      password: form.newPassword,
-      isFirstLogin: false,
-    };
-    localStorage.setItem("currentUser", JSON.stringify(updatedCurrent));
-
-    alert("เปลี่ยนรหัสผ่านเรียบร้อยแล้ว ✅");
-    navigate("/home");
   };
 
   return (

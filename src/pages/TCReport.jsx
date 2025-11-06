@@ -1,11 +1,9 @@
-// 🔹 TCReport.jsx
 import { useEffect, useMemo, useState } from "react";
-import branchesData from "../data/branches.json";
+import Select from "react-select";
+import { supabase } from "../lib/supabaseClient";
+import * as XLSX from "xlsx";
 
-const STORAGE_KEY = "tcReportVersioned";
-const VERSION = 2;
 
-// 🔸 กำหนดช่วงเวลาหลักและย่อย
 const PERIOD_SLOTS = {
   เช้า: ["06:00–07:00", "07:00–08:00", "08:00–09:00", "09:00–10:00"],
   บ่าย: ["12:00–13:00", "13:00–14:00", "14:00–15:00", "15:00–16:00"],
@@ -13,14 +11,8 @@ const PERIOD_SLOTS = {
   ดึก: ["20:00–21:00", "21:00–22:00", "22:00–23:00"],
 };
 
-// ✅ ฟังก์ชันสร้างวันที่แบบไทย
-const isoDate = (d = new Date()) => {
-  const local = new Date(d.getTime() + 7 * 60 * 60 * 1000);
-  return `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(
-    2,
-    "0"
-  )}-${String(local.getDate()).padStart(2, "0")}`;
-};
+const isoDate = (d = new Date()) =>
+  new Date(d.getTime() + 7 * 60 * 60 * 1000).toISOString().split("T")[0];
 
 export default function TCReport() {
   const currentUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
@@ -35,95 +27,174 @@ export default function TCReport() {
   const [slot, setSlot] = useState("06:00–07:00");
   const [billCount, setBillCount] = useState("");
   const [note, setNote] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-  // โหลดข้อมูลเริ่มต้น
+  const today = isoDate(new Date());
+
+  // 🔹 โหลดสาขาจาก Supabase
   useEffect(() => {
-    const b = JSON.parse(localStorage.getItem("branchesVersioned") || "null");
-    setBranches(b?.list || branchesData.list);
-
-    if (!canSelectBranch && currentUser?.branch) setBranch(currentUser.branch);
-
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    if (!stored || stored.version !== VERSION) {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ version: VERSION, data: [] })
-      );
-      setRecords([]);
-    } else {
-      setRecords(stored.data || []);
+    async function fetchBranches() {
+      const { data, error } = await supabase.from("branches").select("id, name");
+      if (!error && data) {
+        setBranches(data);
+        if (!canSelectBranch && currentUser?.branch) setBranch(currentUser.branch);
+      }
     }
+    fetchBranches();
   }, [canSelectBranch, currentUser?.branch]);
 
-  // บันทึกข้อมูลใหม่
-  const persist = (next) => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: VERSION, data: next }));
-    setRecords(next);
-  };
+  // 🔹 โหลดข้อมูล TC Report ของวันนี้
+  useEffect(() => {
+    if (!branch) return;
+    async function fetchReports() {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from("tc_report")
+        .select("*")
+        .eq("date", today)
+        .eq("branch_id", branch)
+        .order("created_at", { ascending: true });
 
-  const addRecord = () => {
+      if (!error && data) setRecords(data);
+      setLoading(false);
+    }
+    fetchReports();
+  }, [branch, today]);
+
+  // 🔹 เพิ่ม / แก้ไขข้อมูล
+  const addRecord = async () => {
     if (!branch) return alert("กรุณาเลือกสาขา");
     if (!billCount) return alert("กรอกจำนวนบิลก่อน");
 
-    const record = {
-      id: Date.now(),
-      branch,
-      date: isoDate(new Date()),
-      period,
-      slot,
-      billCount: Number(billCount),
-      note,
-      createdBy: currentUser.username || "-",
-      createdAt: new Date().toLocaleString("th-TH"),
-    };
+    if (editingId) {
+      // ✏️ แก้ไข
+      const { error } = await supabase
+        .from("tc_report")
+        .update({
+          bill_count: Number(billCount),
+          note,
+          period,
+          slot,
+        })
+        .eq("id", editingId);
 
-    persist([...records, record]);
-    setBillCount("");
-    setNote("");
+      if (!error) {
+        alert("✅ แก้ไขเรียบร้อย");
+        setEditingId(null);
+        setBillCount("");
+        setNote("");
+        reloadData();
+      } else {
+        console.error("Update error:", error);
+      }
+    } else {
+      // ➕ เพิ่มใหม่
+      const { error } = await supabase.from("tc_report").insert([
+        {
+          branch_id: branch,
+          date: today,
+          period,
+          slot,
+          bill_count: Number(billCount),
+          note,
+          created_by: currentUser.username || "-",
+        },
+      ]);
+
+      if (!error) {
+        alert("✅ บันทึกเรียบร้อย");
+        setBillCount("");
+        setNote("");
+        reloadData();
+      } else {
+        console.error("Insert error:", error);
+      }
+    }
   };
 
-  const undoLast = () => {
-    if (!records.length) return alert("ไม่มีข้อมูลให้ลบ");
-    const lastIdx = [...records]
-      .reverse()
-      .findIndex((r) => r.branch === branch && r.date === isoDate());
-    if (lastIdx === -1) return alert("ไม่มีข้อมูลวันนี้ในสาขานี้");
-    const realIndex = records.length - 1 - lastIdx;
-    const next = [...records];
-    next.splice(realIndex, 1);
-    persist(next);
+  // 🔹 โหลดข้อมูลใหม่หลังแก้ไข
+  const reloadData = async () => {
+    const { data } = await supabase
+      .from("tc_report")
+      .select("*")
+      .eq("date", today)
+      .eq("branch_id", branch)
+      .order("created_at", { ascending: true });
+    setRecords(data || []);
   };
 
-  const today = isoDate(new Date());
-  const todayData = useMemo(
-    () => records.filter((r) => r.date === today && r.branch === branch),
-    [records, branch]
-  );
+  // 🔹 ลบข้อมูล
+  const deleteRecord = async (id) => {
+    if (!confirm("ต้องการลบข้อมูลนี้ใช่ไหม?")) return;
+    const { error } = await supabase.from("tc_report").delete().eq("id", id);
+    if (!error) reloadData();
+  };
 
-  const totalToday = todayData.reduce((sum, x) => sum + (x.billCount || 0), 0);
+  // 🔹 เริ่มแก้ไข
+  const startEdit = (rec) => {
+    setEditingId(rec.id);
+    setPeriod(rec.period);
+    setSlot(rec.slot);
+    setBillCount(rec.bill_count);
+    setNote(rec.note || "");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  // 🔹 ข้อมูลสรุปวันนี้
+  const todayData = useMemo(() => {
+    return records.filter((r) =>
+      !searchTerm
+        ? true
+        : r.note?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          r.period.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          r.slot.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [records, searchTerm]);
+
+  const totalToday = todayData.reduce((sum, x) => sum + (x.bill_count || 0), 0);
+
+  // 🔹 ✅ Export Excel
+  const exportToExcel = () => {
+    if (todayData.length === 0) return alert("ไม่มีข้อมูลให้ดาวน์โหลด");
+
+    const ws = XLSX.utils.json_to_sheet(
+      todayData.map((r) => ({
+        วันที่: r.date,
+        สาขา: r.branch_id,
+        ช่วงเวลา: r.period,
+        เวลา: r.slot,
+        จำนวนบิล: r.bill_count,
+        ผู้บันทึก: r.created_by,
+        หมายเหตุ: r.note || "-",
+      }))
+    );
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "TC Report");
+    XLSX.writeFile(wb, `TC_Report_${branch}_${today}.xlsx`);
+  };
 
   return (
     <div className="min-h-screen bg-gray-50 p-4 md:p-6">
-      <h2 className="text-2xl font-bold mb-6 text-gray-800">
-        💰 บันทึกยอดบิล (TC Report)
-      </h2>
+      <h2 className="text-2xl font-bold mb-6 text-gray-800">💰 บันทึกยอดบิล (TC Report)</h2>
 
-      {/* ฟอร์มบันทึก */}
+      {/* ฟอร์ม */}
       <div className="bg-white rounded-2xl shadow p-4 mb-6 flex flex-col md:flex-row flex-wrap gap-3">
-        {/* เลือกสาขา */}
+        {/* สาขา */}
         {canSelectBranch ? (
-          <select
-            value={branch}
-            onChange={(e) => setBranch(e.target.value)}
-            className="border p-2 rounded w-full md:w-auto"
-          >
-            <option value="">เลือกสาขา</option>
-            {branches.map((b) => (
-              <option key={b.id} value={b.name}>
-                {b.name}
-              </option>
-            ))}
-          </select>
+          <div className="w-full md:w-64">
+            <Select
+              options={branches.map((b) => ({
+                value: b.id,
+                label: `${b.name} (${b.id})`,
+              }))}
+              value={branch ? { value: branch, label: branch } : null}
+              onChange={(option) => setBranch(option?.value || "")}
+              placeholder="🔍 ค้นหาสาขา..."
+              isClearable
+            />
+          </div>
         ) : (
           <input
             value={branch}
@@ -132,7 +203,7 @@ export default function TCReport() {
           />
         )}
 
-        {/* เลือกช่วงหลัก */}
+        {/* ช่วง */}
         <select
           value={period}
           onChange={(e) => {
@@ -146,7 +217,7 @@ export default function TCReport() {
           ))}
         </select>
 
-        {/* เลือกช่วงย่อย */}
+        {/* เวลา */}
         <select
           value={slot}
           onChange={(e) => setSlot(e.target.value)}
@@ -157,7 +228,7 @@ export default function TCReport() {
           ))}
         </select>
 
-        {/* กรอกยอดบิล */}
+        {/* จำนวนบิล */}
         <input
           type="number"
           placeholder="จำนวนบิล"
@@ -179,66 +250,106 @@ export default function TCReport() {
           onClick={addRecord}
           className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition w-full md:w-auto"
         >
-          บันทึก
+          {editingId ? "บันทึกการแก้ไข" : "บันทึก"}
         </button>
 
+        {editingId && (
+          <button
+            onClick={() => {
+              setEditingId(null);
+              setBillCount("");
+              setNote("");
+            }}
+            className="bg-gray-100 border border-gray-400 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition w-full md:w-auto"
+          >
+            ❌ ยกเลิก
+          </button>
+        )}
+      </div>
+
+      {/* ช่องค้นหา + ปุ่มดาวน์โหลด */}
+      <div className="flex flex-col md:flex-row justify-between items-center mb-4 gap-3">
+        <div className="relative w-full md:w-96">
+          <span className="absolute left-3 top-2.5 text-gray-400">🔍</span>
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="ค้นหา หมายเหตุ / ช่วงเวลา"
+            className="pl-8 w-full border p-2 rounded-lg shadow-sm focus:ring focus:ring-green-200"
+          />
+        </div>
+
         <button
-          onClick={undoLast}
-          className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded-lg hover:bg-red-200 transition w-full md:w-auto"
+          onClick={exportToExcel}
+          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition"
         >
-          ↩️ Undo ล่าสุด
+          📊 ดาวน์โหลด Excel
         </button>
       </div>
 
-      {/* ตารางสรุป */}
+      {/* ตาราง */}
       <div className="bg-white rounded-2xl shadow p-4 overflow-x-auto">
         <h3 className="font-semibold mb-4 text-gray-700">
-          รายการบันทึกประจำวันที่{" "}
-          {new Date().toLocaleDateString("th-TH", {
-            day: "2-digit",
-            month: "long",
-          })}{" "}
+          รายการประจำวันที่ {new Date().toLocaleDateString("th-TH")}{" "}
           <span className="text-green-700 font-bold">
             (รวมทั้งหมด {totalToday.toLocaleString()} บิล)
           </span>
         </h3>
 
-        <table className="min-w-full text-sm border text-center">
-          <thead className="bg-green-700 text-white">
-            <tr>
-              <th className="py-2 px-3">สาขา</th>
-              <th className="py-2 px-3">วันที่</th>
-              <th className="py-2 px-3">ช่วง</th>
-              <th className="py-2 px-3">เวลา</th>
-              <th className="py-2 px-3">จำนวนบิล</th>
-              <th className="py-2 px-3">ผู้บันทึก</th>
-              <th className="py-2 px-3">หมายเหตุ</th>
-            </tr>
-          </thead>
-          <tbody>
-            {todayData.length ? (
-              todayData.map((r, i) => (
-                <tr key={r.id} className={i % 2 ? "bg-green-50" : "bg-white"}>
-                  <td className="py-2 px-3">{r.branch}</td>
-                  <td className="py-2 px-3">{r.date}</td>
-                  <td className="py-2 px-3">{r.period}</td>
-                  <td className="py-2 px-3 text-gray-700 font-semibold">{r.slot}</td>
-                  <td className="py-2 px-3 text-green-700 font-semibold">
-                    {r.billCount.toLocaleString()}
-                  </td>
-                  <td className="py-2 px-3">{r.createdBy}</td>
-                  <td className="py-2 px-3">{r.note || "-"}</td>
-                </tr>
-              ))
-            ) : (
+        {loading ? (
+          <p className="text-center text-gray-500">กำลังโหลดข้อมูล...</p>
+        ) : (
+          <table className="min-w-full text-sm border text-center">
+            <thead className="bg-green-700 text-white">
               <tr>
-                <td colSpan={7} className="py-4 text-gray-500 italic">
-                  ยังไม่มีข้อมูลในวันนี้
-                </td>
+                <th className="py-2 px-3">สาขา</th>
+                <th className="py-2 px-3">วันที่</th>
+                <th className="py-2 px-3">ช่วง</th>
+                <th className="py-2 px-3">เวลา</th>
+                <th className="py-2 px-3">จำนวนบิล</th>
+                <th className="py-2 px-3">ผู้บันทึก</th>
+                <th className="py-2 px-3">หมายเหตุ</th>
+                <th className="py-2 px-3">จัดการ</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {todayData.length ? (
+                todayData.map((r, i) => (
+                  <tr key={r.id} className={i % 2 ? "bg-green-50" : "bg-white"}>
+                    <td>{r.branch_id}</td>
+                    <td>{r.date}</td>
+                    <td>{r.period}</td>
+                    <td>{r.slot}</td>
+                    <td className="text-green-700 font-semibold">{r.bill_count}</td>
+                    <td>{r.created_by}</td>
+                    <td>{r.note || "-"}</td>
+                    <td className="space-x-2">
+                      <button
+                        onClick={() => startEdit(r)}
+                        className="bg-yellow-400 text-white px-3 py-1 rounded hover:bg-yellow-500"
+                      >
+                        แก้ไข
+                      </button>
+                      <button
+                        onClick={() => deleteRecord(r.id)}
+                        className="bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600"
+                      >
+                        ลบ
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan="8" className="py-4 text-gray-500 italic">
+                    ยังไม่มีข้อมูลในวันนี้
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );

@@ -1,56 +1,102 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import defaultDashboard from "../data/dashboard.json"; // mock ตั้งต้น
+import { supabase } from "../lib/supabaseClient";
+import defaultDashboard from "../data/dashboard.json";
 
 export default function Home() {
   const navigate = useNavigate();
   const [dashboard, setDashboard] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
 
-  // โหลด user + dashboard (localStorage -> json) + version check
-    useEffect(() => {
+  // -------------------------------------------------------------------
+  // ✅ โหลด user + dashboard จาก Supabase
+  // -------------------------------------------------------------------
+  useEffect(() => {
     const cu = JSON.parse(localStorage.getItem("currentUser") || "null");
-    if (!cu) { navigate("/"); return; }
+    if (!cu) {
+      navigate("/");
+      return;
+    }
     setCurrentUser(cu);
 
-    const stored = JSON.parse(localStorage.getItem("dashboard") || "null");
+    const fetchDashboard = async () => {
+      try {
+        const { data, error } = await supabase.from("dashboard").select("*").limit(1);
+        if (error) throw error;
 
-    // ถ้าไม่มี หรือ version ไม่ตรงกับไฟล์ json → ใช้ไฟล์ json แล้วเขียนทับ
-    if (!stored || stored.version !== defaultDashboard.version) {
-        localStorage.setItem("dashboard", JSON.stringify(defaultDashboard));
-        setDashboard(defaultDashboard);
-    } else {
-        setDashboard(stored);
-    }
-    }, [navigate]);
+        if (!data || data.length === 0) {
+          // ✅ ถ้ายังไม่มีข้อมูล ให้ insert mock default
+          await supabase.from("dashboard").insert([defaultDashboard]);
+          setDashboard(defaultDashboard);
+        } else {
+          const d = data[0];
+          // ✅ ถ้า version mismatch → update จาก mock
+          if (d.version !== defaultDashboard.version) {
+            await supabase.from("dashboard").update(defaultDashboard).eq("id", d.id);
+            setDashboard(defaultDashboard);
+          } else {
+            setDashboard(d);
+          }
+        }
+      } catch (err) {
+        console.error("❌ โหลด dashboard ไม่สำเร็จ:", err);
+      }
+    };
+
+    fetchDashboard();
+  }, [navigate]);
 
   if (!currentUser || !dashboard) return null;
 
   const diffCust = dashboard.tc7 - dashboard.tccj;
   const diffColor =
     diffCust > 0 ? "text-green-600" : diffCust < 0 ? "text-red-600" : "text-gray-700";
-    // รีเซ็ต dashboard ใน localStorage แล้วโหลดใหม่
-    function resetDemo() {
-    localStorage.removeItem("dashboard");
-    window.location.reload();
-    }
 
-    // แก้ค่า dashboard แล้วเซฟลง localStorage
-    function saveQuickEdit(next) {
-    const newDb = { ...(dashboard || {}), ...next };
-    localStorage.setItem("dashboard", JSON.stringify(newDb));
-    setDashboard(newDb);
+  // -------------------------------------------------------------------
+  // ✅ รีเซ็ต dashboard
+  // -------------------------------------------------------------------
+  const resetDemo = async () => {
+    if (!confirm("ต้องการรีเซ็ตข้อมูลหรือไม่?")) return;
+    try {
+      await supabase.from("dashboard").delete().neq("id", 0);
+      await supabase.from("dashboard").insert([defaultDashboard]);
+      setDashboard(defaultDashboard);
+      alert("รีเซ็ตข้อมูลสำเร็จ ✅");
+    } catch (err) {
+      alert("❌ รีเซ็ตไม่สำเร็จ");
+      console.error(err);
     }
+  };
 
+  // -------------------------------------------------------------------
+  // ✅ Quick Edit แล้วอัปเดต Supabase
+  // -------------------------------------------------------------------
+  const saveQuickEdit = async (next) => {
+    try {
+      const newDb = { ...(dashboard || {}), ...next };
+      const { error } = await supabase
+        .from("dashboard")
+        .update(newDb)
+        .eq("id", dashboard.id);
+      if (error) throw error;
+      setDashboard(newDb);
+      alert("อัปเดตข้อมูลสำเร็จ ✅");
+    } catch (err) {
+      console.error("❌ update failed:", err);
+      alert("อัปเดตข้อมูลไม่สำเร็จ");
+    }
+  };
+
+  // -------------------------------------------------------------------
+  // ✅ UI
+  // -------------------------------------------------------------------
   return (
     <div className="min-h-screen bg-secondary flex flex-col md:flex-row justify-center gap-8 p-6">
 
       {/* ===== ฝั่งข้อมูลสรุป + ปุ่มจัดการ (ขึ้นก่อนบนมือถือ) ===== */}
       <div className="flex-1 bg-white rounded-2xl shadow-lg p-6 flex flex-col items-center order-1 md:order-2">
         <div className="text-center mb-4">
-          <h3 className="text-xl font-bold">
-            สวัสดี คุณ{currentUser.name || "-"}
-          </h3>
+          <h3 className="text-xl font-bold">สวัสดี คุณ{currentUser.name || "-"}</h3>
           <p className="text-sm text-gray-600">
             {currentUser.role} | สาขาที่รับผิดชอบ : {currentUser.branch}
           </p>
@@ -59,23 +105,35 @@ export default function Home() {
         <div className="bg-gray-50 rounded-xl shadow-inner p-4 w-full max-w-sm text-left mb-6">
           <p className="font-semibold text-gray-800 mb-1">
             ข้อมูลล่าสุด (เมื่อวาน){" "}
-            <span className="font-bold">{dashboard.asOf}</span>
+            <span className="font-bold">{dashboard.as_of}</span>
           </p>
           <p className="text-sm text-gray-600">
-            เฉลี่ย {dashboard.avgStores} ร้าน | เทียบวันที่ {dashboard.compareTo}
+            เฉลี่ย {dashboard.avg_stores} ร้าน | เทียบวันที่ {dashboard.compare_to}
           </p>
 
           <div className="mt-3 space-y-1">
             <p>
               TC (7-Eleven): <b>{dashboard.tc7} คน</b>{" "}
-              <span className={dashboard.tc7Delta >= 0 ? "text-green-600 font-semibold" : "text-red-600 font-semibold"}>
-                {dashboard.tc7Delta > 0 ? `+${dashboard.tc7Delta}` : dashboard.tc7Delta}
+              <span
+                className={
+                  dashboard.tc7_delta >= 0
+                    ? "text-green-600 font-semibold"
+                    : "text-red-600 font-semibold"
+                }
+              >
+                {dashboard.tc7_delta > 0 ? `+${dashboard.tc7_delta}` : dashboard.tc7_delta}
               </span>
             </p>
             <p>
               TC (CJ): <b>{dashboard.tccj} คน</b>{" "}
-              <span className={dashboard.tccjDelta >= 0 ? "text-green-600 font-semibold" : "text-red-600 font-semibold"}>
-                {dashboard.tccjDelta > 0 ? `+${dashboard.tccjDelta}` : dashboard.tccjDelta}
+              <span
+                className={
+                  dashboard.tccj_delta >= 0
+                    ? "text-green-600 font-semibold"
+                    : "text-red-600 font-semibold"
+                }
+              >
+                {dashboard.tccj_delta > 0 ? `+${dashboard.tccj_delta}` : dashboard.tccj_delta}
               </span>
             </p>
             <p>
@@ -88,7 +146,6 @@ export default function Home() {
         </div>
 
         <div className="flex flex-col items-center gap-3 w-full max-w-sm">
-          {/* ลิงก์จัดการเฉพาะ Admin */}
           {currentUser.role === "Admin" && (
             <div className="flex gap-4">
               <Link to="/user" className="text-primary font-semibold hover:underline">
@@ -100,8 +157,11 @@ export default function Home() {
             </div>
           )}
 
-          <button className="btn bg-primary text-white w-full py-3 rounded-xl font-semibold hover:bg-green-700 transition-all">
-            แก้ไขข้อมูลส่วนตัว
+          <button
+            className="btn bg-primary text-white w-full py-3 rounded-xl font-semibold hover:bg-green-700 transition-all"
+            onClick={resetDemo}
+          >
+            รีเซ็ต Dashboard
           </button>
         </div>
       </div>
@@ -122,24 +182,12 @@ export default function Home() {
           >
             ข้อมูลร้านสาขา
           </Link>
-        <Link
-        to="/tc"
-        className="btn bg-primary text-white py-6 rounded-xl font-semibold hover:bg-green-700 hover:scale-[1.02] transition-all block text-center"
-        >
-        กรอก TC
-        </Link>
-          {/* <button className="btn bg-primary text-white py-6 rounded-xl font-semibold hover:bg-green-700 hover:scale-[1.02] transition-all">
-            เป้าหมายโครงการ
-          </button>
-          <button className="btn bg-primary text-white py-6 rounded-xl font-semibold hover:bg-green-700 hover:scale-[1.02] transition-all">
-            กลุ่มลูกค้า CJ
-          </button>
-          <button className="btn bg-primary text-white py-6 rounded-xl font-semibold hover:bg-green-700 hover:scale-[1.02] transition-all col-span-2">
-            ยอดขายก่อน-หลังโครงการ
-          </button>
-          <button className="btn bg-primary text-white py-6 rounded-xl font-semibold hover:bg-green-700 hover:scale-[1.02] transition-all col-span-2">
-            ผลลัพธ์และขยายผล
-          </button> */}
+          <Link
+            to="/tc"
+            className="btn bg-primary text-white py-6 rounded-xl font-semibold hover:bg-green-700 hover:scale-[1.02] transition-all block text-center"
+          >
+            กรอก TC
+          </Link>
         </div>
       </div>
     </div>
